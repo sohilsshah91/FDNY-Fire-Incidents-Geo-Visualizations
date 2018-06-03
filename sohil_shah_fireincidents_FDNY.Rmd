@@ -1,0 +1,194 @@
+---
+title: "Mapping Fire Incidents - FDNY"
+author: Sohil Shah
+date: 2017-04-08
+always_allow_html: yes
+output:
+  html_document:
+    keep_md: true
+    code_folding: hide
+---
+
+```{r setup_new, include=FALSE}
+library(knitr)
+
+opts_chunk$set(fig.path="images/",
+               cache.path="cache/",
+            #   dev=c("png","pdf"),
+            #  fig.width=5,
+            #  fig.height=4.5,
+            #  dpi=300,
+            #  fig.show="hold",
+            #  fig.lp="fig:",
+               cache=TRUE,
+            #  par=TRUE,
+               echo=TRUE,
+               message=FALSE,
+               warning=FALSE)
+```
+
+
+### FDNY Firehouse Lising & Fire Incidents
+
+```{r import libs,include=FALSE}
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(plotly)
+library(DT)
+library(ggthemes)
+library(rvest)
+library(stringr)
+library(readr)
+library(leaflet)
+library(RANN)
+library(devtools)
+library(RColorBrewer)
+library(plyr)
+library(fossil)
+library(geosphere)
+
+opts_chunk$set(fig.path="images/",
+               cache.path="cache/",
+               cache=FALSE,
+               echo=FALSE,
+               message=FALSE,
+               warning=FALSE) 
+```
+
+#### 1. Map providing locations with severe fires incidents only in New York City. 
+The pop-up provides following four pieces of information on the incident:
+1. Type of Severity of Fire Incident
+2. Time of Incident Occurence,
+3. Locality Affected,
+4. Type of Property Affected
+
+```{r severe_fires}
+severe_incidents = read_csv("Data_Files/severe_incidents.csv")
+severe_incidents<- filter(severe_incidents, Latitude>40.495992, Latitude<40.915568, Longitude> -74.257159, Longitude< -73.699215)
+
+fire <- paste("Type of Fire: ",severe_incidents$INCIDENT_TYPE_DESC,"<br/>",
+                 "Time of Incidence: ",severe_incidents$INCIDENT_DATE_TIME,"<br/>",
+                 "Locality: ",severe_incidents$BOROUGH_DESC,"<br/>",
+                 "Property Type: ",severe_incidents$PROPERTY_USE_DESC,"<br/>")
+
+
+fire_incidents_map <- leaflet(severe_incidents, option = leafletOptions(minZoom=0, maxZoom = 18)) %>% setView( lng = -74.0156491, lat = 40.7022541, zoom = 11) %>% addProviderTiles("Stamen.TonerLite") %>% addCircles(col="red", popup = fire)
+fire_incidents_map
+```
+
+#### 2. Type of Property - What kind of property was affected? Further deep-dive.
+
+```{r property_type_color}
+### Creating a helper column and a categorical column to define Property Categories
+severe_incidents$PROPERTY_CODE <- substr(severe_incidents$PROPERTY_USE_DESC,1,3) 
+severe_incidents$PROPERTY_CODE <- as.numeric(as.character(severe_incidents$PROPERTY_CODE))
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>0 & severe_incidents$PROPERTY_CODE<175]<-  "Recreation/ Worship"
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>179 &  severe_incidents$PROPERTY_CODE<400]<-  "School/ Hospital/ Police"
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>399 & severe_incidents$PROPERTY_CODE<500]<-  "Residential Stay/ Dormitory"
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>499 & severe_incidents$PROPERTY_CODE<598]<-  "Stores/Shops/ Banks"
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>598 & severe_incidents$PROPERTY_CODE<801]<-  "Computer Centers/ Labs/Offices"
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>801 & severe_incidents$PROPERTY_CODE<901]<-  "Parking/ Warehouse/Dock"
+severe_incidents$PROPERTY_CAT[severe_incidents$PROPERTY_CODE>901 & severe_incidents$PROPERTY_CODE<999]<-  "Tunnels/Bridges/Water bodies"
+
+fire_incidents <- paste("Property Type: ", severe_incidents$PROPERTY_CAT,"<br/>")
+pal = colorFactor("Set2", domain = severe_incidents$PROPERTY_CAT) # Grab a palette
+color_pal = pal(severe_incidents$PROPERTY_CAT)
+fire_incidents_map %>% addCircles(color = color_pal, popup = fire_incidents) %>% addProviderTiles("Stamen.TonerLite") %>% addLegend(pal = pal, values = ~severe_incidents$PROPERTY_CAT, title = "TYPE OF AFFECTED PROPERTY")
+```
+
+####  3. How are the fire incident numbers aggregating using clustered markers?
+I have brought in an inteactive map which uses focus for zooming in and out and gives the clustered count as per the zoom.
+
+```{r severe_fires_clustered}
+fire_clustered <- paste("Type of Fire: ",severe_incidents$INCIDENT_TYPE_DESC,"<br/>",
+                 "Time of Incidence: ",severe_incidents$INCIDENT_DATE_TIME,"<br/>",
+                 "Locality: ",severe_incidents$BOROUGH_DESC,"<br/>",
+                 "Property Type: ",severe_incidents$PROPERTY_USE_DESC,"<br/>")
+fire_incidents_clustered <- leaflet(severe_incidents, option = leafletOptions(minZoom=0, maxZoom = 18)) %>% setView(lng = -74.0156491, lat = 40.7022541, zoom = 11) %>% addProviderTiles("Stamen.TonerLite") %>% addCircleMarkers(col="red", popup = fire_clustered, clusterOptions = markerClusterOptions())
+fire_incidents_clustered
+```
+
+#### 4. How near are the fire stations located? How severe are these fire incidents in terms of duration of incident? How is the proximity of these fire houses with respect to fire incidents?
+
+There are 218 fire stations in New York City. To display severity of fire incidents, I have used Total Duration (in hours) as a parameter for size of each circle marker. I have also displayed the fire station locations using the icon shared on "https://www.shareicon.net/pack/fire".Added a layering schem - One layer is for Incidents and other is for Fire Stations.
+
+```{r fire_station_layers}
+fire_station_data <- read_csv("Data_Files/FDNY_Firehouse_Listing.csv")
+
+fire_stations <- paste("Type of Fire: ",severe_incidents$INCIDENT_TYPE_DESC,"<br/>",
+                 "Time of Incidence: ",severe_incidents$INCIDENT_DATE_TIME,"<br/>",
+                 "Locality: ",severe_incidents$BOROUGH_DESC,"<br/>",
+                 "Property Type: ",severe_incidents$PROPERTY_USE_DESC,"<br/>",
+                 "Size By: Total Incident Duration (hours) = ", format(round(severe_incidents$TOTAL_INCIDENT_DURATION/3600,2), nsmall=2),"<br/>")
+
+fireIcons <- icons(
+  iconUrl = "Data_Files/fire.png",
+  iconWidth = 15, iconHeight = 17,
+  iconAnchorX = 7.5, iconAnchorY = 8.5
+  )
+
+plot_fire_incidents_layers <- leaflet(severe_incidents, option = leafletOptions(minZoom=0, maxZoom = 18)) %>% setView( lng = -73.94005, lat = 40.78963, zoom = 11) %>%addTiles() %>% addCircles(group = "Incidents",col="#f79433", popup = fire_stations, radius = ~TOTAL_INCIDENT_DURATION/3600, fillOpacity=0.7) %>% addProviderTiles(providers$Stamen.TonerLite, group = "Incidents & Fire Stations")  %>% addMarkers(data=fire_station_data, icon = fireIcons, popup=~paste("Facility Name: ", FacilityName),group = "FireStations") %>%
+addLayersControl(baseGroups = c("Incidents & Fire Stations"),overlayGroups = c("Incidents","FireStations"),options = layersControlOptions(collapsed = TRUE) )
+plot_fire_incidents_layers
+```
+
+#### 5. Distance from Firehouse and Response Time for each of fire incidents
+
+We now want to investigate whether the distance of the incident from the nearest firehouse varies across the city. 
+
+```{r mindistance}
+severe_incidents_firestations <- severe_incidents[!is.na(severe_incidents$Latitude) & !is.na(severe_incidents$Longitude),]
+
+fire_station_data <- fire_station_data[!is.na(fire_station_data$Latitude) & !is.na(fire_station_data$Longitude),]
+
+Fire_Incident_Coordinates <- data.frame(severe_incidents_firestations[26:25])
+Fire_Incident_Coordinates$Id <- formatC((1:nrow(Fire_Incident_Coordinates)), width=3,flag=0)
+
+#### Reference Citation: https://stackoverflow.com/questions/22121742/calculate-the-distance-between-two-points-of-two-datasets-nearest-neighbor
+
+Nearest_Fire_Station <- function(id){
+   tmp <- Fire_Incident_Coordinates[Fire_Incident_Coordinates$Id==id, 1:2]
+   fire_station_latlong <- rbind(tmp,fire_station_data[6:5])
+   fire_incident_station_mindist <- earth.dist(fire_station_latlong, dist=TRUE)[1:(nrow(fire_station_latlong)-1)]
+   fire_incident_station_mindist <- which.min(fire_incident_station_mindist)
+   fire_incident_station_mindist <- fire_station_data[fire_incident_station_mindist,10]
+   fire_incident_station_mindist <- data.frame(fire_incident_station_mindist, fire_station_latlong=tmp)
+   return(fire_incident_station_mindist)
+ }
+ 
+Coordinates_Fire_Station <- ldply(Fire_Incident_Coordinates$Id, Nearest_Fire_Station)
+
+mindistance <- merge(Coordinates_Fire_Station, fire_station_data, by.x=c(1), by.y=c(10))
+FacilityName <- matrix(c(mindistance$FacilityName), ncol=1)
+FacilityAddress <- matrix(c(mindistance$FacilityAddress), ncol=1)
+
+mindistance_incident_latlong<- matrix(c(mindistance$Longitude,mindistance$Latitude), ncol=2)
+mindistance_station_latlong <- matrix(c(mindistance$fire_station_latlong.Longitude,mindistance$fire_station_latlong.Latitude), ncol=2)
+minimum_distance <- matrix(c(distCosine(mindistance_incident_latlong, mindistance_station_latlong, r=6378137)))
+
+severe_incidents_firestations$Min_Distance <- minimum_distance
+severe_incidents_firestations$Facility_Name <- FacilityName
+severe_incidents_firestations$Facility_Address <- FacilityAddress
+
+severe_incidents_firestations$ARRIVAL_DATE_TIME_NEW <- as.POSIXct(severe_incidents_firestations$ARRIVAL_DATE_TIME, format="%m/%d/%Y %I:%M:%S %p", tz="EST")
+severe_incidents_firestations$INCIDENT_DATE_TIME_NEW <- as.POSIXct(severe_incidents_firestations$INCIDENT_DATE_TIME, format="%m/%d/%Y %I:%M:%S %p", tz="EST")
+severe_incidents_firestations$Response_Time <- difftime(severe_incidents_firestations$ARRIVAL_DATE_TIME_NEW, severe_incidents_firestations$INCIDENT_DATE_TIME_NEW, units = "mins")
+```
+
+Plotting an interactive scatter plot with log scaling for better understanding of relation between Response times of fire stations and nearest fire station distances.
+```{r mindistanceplot}
+plot_resptime_distance<- ggplot(data=severe_incidents_firestations, aes(x=as.numeric(Response_Time), y=Min_Distance))+ geom_point(alpha=0.3, size=3, position = 'jitter', color = "orange") +theme(axis.text.x = element_text(angle=90, size=rel(0.8), hjust=1))+ggtitle("Response Time V/s Distance")+ylab("Response Time") +xlab("Minimum Distance")+scale_x_log10()+ scale_y_log10() +theme_gdocs()
+plot_resptime_interactive <- ggplotly(plot_resptime_distance)
+plot_resptime_interactive
+```
+
+#### 6. Map of Response Times with respect to Property types affected by fire incidents
+1. Size By: Response Time
+2. Color By: Type of Property Affected
+```{r response_time_property}
+fire_incidents <- paste("Response Time in mins: ", format(round(severe_incidents_firestations$Response_Time,2),nsmall=2),"<br/>", "Property Type: ", severe_incidents$PROPERTY_CAT,"<br/>")
+pal = colorFactor("Set2", domain = severe_incidents$PROPERTY_CAT) # Grab a palette
+color_pal = pal(severe_incidents$PROPERTY_CAT)
+leaflet(severe_incidents_firestations, option = leafletOptions(minZoom=0, maxZoom = 18)) %>% setView( lng = -74.0156491, lat = 40.7022541, zoom = 14) %>% addProviderTiles("Stamen.TonerLite")  %>% addCircles(color = color_pal, popup = fire_incidents, radius = severe_incidents_firestations$Response_Time) %>% addLegend(pal = pal, values = ~severe_incidents_firestations$PROPERTY_CAT, title = "TYPE OF AFFECTED PROPERTY")
+```
